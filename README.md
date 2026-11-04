@@ -25,3 +25,14 @@ That's what this server does — it does **not** touch any screen-share or contr
 ```bash
 npm install
 npm start
+```
+
+## Copyright
+
+Copyright © 2026 Kavya Kansagara. All Rights Reserved.
+
+Developed by Kavya Kansagara.
+
+This project is provided for portfolio and educational viewing purposes only. Copying, redistribution, modification, or commercial use requires prior written permission from the copyright owner.
+
+Original repository: https://github.com/kavyakansagara933-cloud/NexaDesk-signaling-server
