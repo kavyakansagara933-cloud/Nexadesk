@@ -1,8 +1,14 @@
 /**
- * NexaDesk Android Client - Stage 2 (view + touch control)
- * --------------------------------------------------------
+ * NexaDesk Android Client - Stage 3 (view + touch + keyboard)
+ * -----------------------------------------------------------
  * Enter the pairing code shown in NexaDesk Host, connect through the
- * signaling server, watch the host's screen and control it by touch.
+ * signaling server, watch the host's screen and control it by touch
+ * and keyboard.
+ *
+ * Keyboard: tap "Keyboard" (top left) to open the phone's on-screen
+ * keyboard. Whatever you type appears on the host. A key bar gives
+ * Esc, Tab, arrows, Delete, Enter and more. Ctrl, Alt and Shift are
+ * "sticky": tap one, then tap a letter (for example Ctrl, then C).
  *
  * Touch gestures work like a laptop trackpad:
  *   - Drag one finger ........ move the cursor
@@ -28,9 +34,11 @@ import {
   PanResponder,
   Platform,
   StatusBar,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
+  TextInputKeyPressEvent,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -78,6 +86,55 @@ const NATURAL_SCROLL = true;
 // Skip mouse moves while this many bytes are still waiting to be sent.
 const MAX_BUFFERED_BYTES = 4096;
 
+/* ---------------- KEYBOARD SETTINGS ---------------- */
+
+type Mods = { ctrl: boolean; alt: boolean; shift: boolean };
+
+const NO_MODS: Mods = { ctrl: false, alt: false, shift: false };
+
+// Browser-style key codes the host understands (see host keymap.js).
+const MOD_CODES: Record<keyof Mods, string> = {
+  ctrl: 'ControlLeft',
+  alt: 'AltLeft',
+  shift: 'ShiftLeft',
+};
+
+// Buttons that stay "on" until the next key is pressed.
+const MOD_BUTTONS: { label: string; mod: keyof Mods }[] = [
+  { label: 'Ctrl', mod: 'ctrl' },
+  { label: 'Alt', mod: 'alt' },
+  { label: 'Shift', mod: 'shift' },
+];
+
+// Buttons that press one key.
+const KEY_BUTTONS: { label: string; code: string }[] = [
+  { label: 'Esc', code: 'Escape' },
+  { label: 'Tab', code: 'Tab' },
+  { label: 'Win', code: 'MetaLeft' },
+  { label: '←', code: 'ArrowLeft' },
+  { label: '↑', code: 'ArrowUp' },
+  { label: '↓', code: 'ArrowDown' },
+  { label: '→', code: 'ArrowRight' },
+  { label: 'Home', code: 'Home' },
+  { label: 'End', code: 'End' },
+  { label: 'Del', code: 'Delete' },
+  { label: '⌫', code: 'Backspace' },
+  { label: '↵', code: 'Enter' },
+];
+
+/** Key code for a typed letter or digit, used for shortcuts like Ctrl+C. */
+function codeForChar(char: string): string | null {
+  if (/^[a-z]$/i.test(char)) {
+    return `Key${char.toUpperCase()}`;
+  }
+
+  if (/^[0-9]$/.test(char)) {
+    return `Digit${char}`;
+  }
+
+  return null;
+}
+
 const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
 const round5 = (value: number) => Math.round(value * 100000) / 100000;
 
@@ -91,6 +148,8 @@ function App() {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [controlReady, setControlReady] = useState(false);
   const [showHint, setShowHint] = useState(true);
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const [mods, setMods] = useState<Mods>(NO_MODS);
 
   const socketRef = useRef<WebSocket | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
@@ -123,6 +182,12 @@ function App() {
     dragging: false,
     lastTapEnd: 0,
   });
+
+  // Same as `mods`, readable straight away inside event handlers.
+  const modsRef = useRef<Mods>(NO_MODS);
+
+  // Hidden text box that opens the phone's on-screen keyboard.
+  const keyboardInputRef = useRef<React.ElementRef<typeof TextInput>>(null);
 
   // Size of the touch area on screen.
   const layoutRef = useRef({ width: 1, height: 1 });
@@ -186,6 +251,83 @@ function App() {
     });
   }, [flushMove]);
 
+  /* ---------------- KEYBOARD ---------------- */
+
+  const setModifiers = (next: Mods) => {
+    modsRef.current = next;
+    setMods(next);
+  };
+
+  /** Presses and releases one key, together with any sticky modifiers. */
+  const tapKey = (code: string) => {
+    const active = (Object.keys(MOD_CODES) as (keyof Mods)[])
+      .filter(mod => modsRef.current[mod])
+      .map(mod => MOD_CODES[mod]);
+
+    for (const modCode of active) {
+      sendCommand({ type: 'key-down', code: modCode });
+    }
+
+    sendCommand({ type: 'key-down', code });
+    sendCommand({ type: 'key-up', code });
+
+    for (const modCode of [...active].reverse()) {
+      sendCommand({ type: 'key-up', code: modCode });
+    }
+
+    // Sticky modifiers are used up by one key.
+    if (active.length > 0) {
+      setModifiers(NO_MODS);
+    }
+  };
+
+  /** Called whenever the phone's keyboard produces text. */
+  const onKeyboardText = (text: string) => {
+    if (!text) {
+      return;
+    }
+
+    const anyModifier =
+      modsRef.current.ctrl || modsRef.current.alt || modsRef.current.shift;
+
+    // Ctrl/Alt/Shift + a letter or digit: send it as a shortcut.
+    if (anyModifier && text.length === 1) {
+      const code = codeForChar(text);
+
+      if (code) {
+        tapKey(code);
+        keyboardInputRef.current?.clear();
+        return;
+      }
+    }
+
+    // Everything else is typed as plain text on the host.
+    sendCommand({ type: 'key-text', text });
+
+    // Empty the box so it only ever holds the newest key.
+    keyboardInputRef.current?.clear();
+  };
+
+  const onKeyboardKeyPress = (event: TextInputKeyPressEvent) => {
+    if (event.nativeEvent.key === 'Backspace') {
+      tapKey('Backspace');
+    }
+  };
+
+  const toggleKeyboard = () => {
+    if (keyboardOpen) {
+      keyboardInputRef.current?.blur();
+      setKeyboardOpen(false);
+    } else {
+      setKeyboardOpen(true);
+      setTimeout(() => keyboardInputRef.current?.focus(), 50);
+    }
+  };
+
+  const toggleModifier = (mod: keyof Mods) => {
+    setModifiers({ ...modsRef.current, [mod]: !modsRef.current[mod] });
+  };
+
   /* ---------------- CLEAN UP ---------------- */
 
   const disconnect = useCallback(() => {
@@ -196,6 +338,10 @@ function App() {
     }
 
     cursorRef.current.synced = false;
+
+    modsRef.current = NO_MODS;
+    setMods(NO_MODS);
+    setKeyboardOpen(false);
 
     controlChannelRef.current?.close?.();
     controlChannelRef.current = null;
@@ -581,7 +727,74 @@ function App() {
           </View>
         )}
 
-        <TouchableOpacity style={styles.disconnectBtn} onPress={disconnect}>
+        {/* Hidden box that brings up the phone's keyboard. */}
+        <TextInput
+          ref={keyboardInputRef}
+          style={styles.hiddenInput}
+          onChangeText={onKeyboardText}
+          onKeyPress={onKeyboardKeyPress}
+          onSubmitEditing={() => tapKey('Enter')}
+          onBlur={() => setKeyboardOpen(false)}
+          submitBehavior="submit"
+          autoCapitalize="none"
+          autoCorrect={false}
+          spellCheck={false}
+          autoComplete="off"
+          importantForAutofill="no"
+          keyboardType="visible-password"
+        />
+
+        {keyboardOpen && (
+          <View style={styles.keyBar}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              keyboardShouldPersistTaps="always"
+              contentContainerStyle={styles.keyBarContent}
+            >
+              {MOD_BUTTONS.map(button => (
+                <TouchableOpacity
+                  key={button.mod}
+                  style={[styles.keyBtn, mods[button.mod] && styles.keyBtnOn]}
+                  onPress={() => toggleModifier(button.mod)}
+                >
+                  <Text
+                    style={[
+                      styles.keyBtnText,
+                      mods[button.mod] && styles.keyBtnTextOn,
+                    ]}
+                  >
+                    {button.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+
+              {KEY_BUTTONS.map(button => (
+                <TouchableOpacity
+                  key={button.code}
+                  style={styles.keyBtn}
+                  onPress={() => tapKey(button.code)}
+                >
+                  <Text style={styles.keyBtnText}>{button.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
+        <TouchableOpacity
+          style={[styles.topBtn, styles.keyboardToggle]}
+          onPress={toggleKeyboard}
+        >
+          <Text style={styles.disconnectText}>
+            {keyboardOpen ? 'Hide keyboard' : 'Keyboard'}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.topBtn, styles.disconnectBtn]}
+          onPress={disconnect}
+        >
           <Text style={styles.disconnectText}>Disconnect</Text>
         </TouchableOpacity>
       </View>
@@ -699,14 +912,59 @@ const styles = StyleSheet.create({
     fontSize: 12,
     textAlign: 'center',
   },
-  disconnectBtn: {
+  topBtn: {
     position: 'absolute',
     top: 12,
-    right: 12,
     paddingVertical: 8,
     paddingHorizontal: 14,
     backgroundColor: 'rgba(20,21,26,0.8)',
     borderRadius: 6,
+  },
+  disconnectBtn: {
+    right: 12,
+  },
+  keyboardToggle: {
+    left: 12,
+  },
+  hiddenInput: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    width: 1,
+    height: 1,
+    opacity: 0.01,
+  },
+  keyBar: {
+    position: 'absolute',
+    top: 56,
+    left: 0,
+    right: 0,
+  },
+  keyBarContent: {
+    paddingHorizontal: 12,
+    gap: 8,
+  },
+  keyBtn: {
+    minWidth: 44,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    backgroundColor: 'rgba(20,21,26,0.85)',
+    borderWidth: 1,
+    borderColor: '#2a2a35',
+    borderRadius: 6,
+  },
+  keyBtnOn: {
+    backgroundColor: '#7c9eff',
+    borderColor: '#7c9eff',
+  },
+  keyBtnText: {
+    color: '#e8e8ea',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  keyBtnTextOn: {
+    color: '#14151a',
   },
   disconnectText: {
     color: '#e8e8ea',
