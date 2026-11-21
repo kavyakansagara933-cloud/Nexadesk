@@ -38,7 +38,6 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  TextInputKeyPressEvent,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -122,6 +121,15 @@ const KEY_BUTTONS: { label: string; code: string }[] = [
   { label: '↵', code: 'Enter' },
 ];
 
+// The hidden keyboard box always starts with one of these marker
+// characters. It stands for "something is already typed", so pressing
+// Backspace always changes the text and can be noticed. Two markers are
+// swapped when it needs to be reset.
+const MARKERS = ['x', 'y'];
+
+// Reset the hidden box if it grows beyond this many characters.
+const MAX_BUFFER_LENGTH = 60;
+
 /** Key code for a typed letter or digit, used for shortcuts like Ctrl+C. */
 function codeForChar(char: string): string | null {
   if (/^[a-z]$/i.test(char)) {
@@ -150,6 +158,7 @@ function App() {
   const [showHint, setShowHint] = useState(true);
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const [mods, setMods] = useState<Mods>(NO_MODS);
+  const [keyboardText, setKeyboardText] = useState(MARKERS[0]);
 
   const socketRef = useRef<WebSocket | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
@@ -185,6 +194,12 @@ function App() {
 
   // Same as `mods`, readable straight away inside event handlers.
   const modsRef = useRef<Mods>(NO_MODS);
+
+  // What the hidden keyboard box held after the last change.
+  const lastKeyboardTextRef = useRef(MARKERS[0]);
+
+  // Which of the two marker characters the box is using.
+  const markerIndexRef = useRef(0);
 
   // Hidden text box that opens the phone's on-screen keyboard.
   const keyboardInputRef = useRef<React.ElementRef<typeof TextInput>>(null);
@@ -281,36 +296,74 @@ function App() {
     }
   };
 
-  /** Called whenever the phone's keyboard produces text. */
+  /** Starts the hidden box again from a fresh marker character. */
+  const resetKeyboardBox = () => {
+    markerIndexRef.current = (markerIndexRef.current + 1) % MARKERS.length;
+
+    const marker = MARKERS[markerIndexRef.current];
+
+    lastKeyboardTextRef.current = marker;
+    setKeyboardText(marker);
+  };
+
+  /**
+   * Called whenever the text in the hidden box changes.
+   *
+   * Instead of trusting one key at a time, we compare the new text
+   * with the previous text and send exactly what changed:
+   *   - characters that were removed -> Backspace presses
+   *   - characters that were added   -> typed text
+   * This stays correct even if the phone's keyboard corrects, replaces
+   * or sends several characters at once, and nothing is lost when
+   * typing fast.
+   */
   const onKeyboardText = (text: string) => {
-    if (!text) {
-      return;
+    const previous = lastKeyboardTextRef.current;
+
+    // Length of the start that did not change.
+    let same = 0;
+    while (
+      same < text.length &&
+      same < previous.length &&
+      text[same] === previous[same]
+    ) {
+      same++;
     }
 
-    const anyModifier =
-      modsRef.current.ctrl || modsRef.current.alt || modsRef.current.shift;
+    const removed = previous.length - same;
+    const added = text.slice(same);
 
-    // Ctrl/Alt/Shift + a letter or digit: send it as a shortcut.
-    if (anyModifier && text.length === 1) {
-      const code = codeForChar(text);
+    for (let i = 0; i < removed; i++) {
+      tapKey('Backspace');
+    }
 
-      if (code) {
-        tapKey(code);
-        keyboardInputRef.current?.clear();
-        return;
+    if (added.length > 0) {
+      const anyModifier =
+        modsRef.current.ctrl || modsRef.current.alt || modsRef.current.shift;
+
+      const shortcutCode =
+        anyModifier && added.length === 1 ? codeForChar(added) : null;
+
+      if (shortcutCode) {
+        // Ctrl/Alt/Shift + a letter or digit: send it as a shortcut.
+        tapKey(shortcutCode);
+      } else {
+        // Everything else is typed as plain text on the host.
+        sendCommand({ type: 'key-text', text: added });
       }
     }
 
-    // Everything else is typed as plain text on the host.
-    sendCommand({ type: 'key-text', text });
-
-    // Empty the box so it only ever holds the newest key.
-    keyboardInputRef.current?.clear();
-  };
-
-  const onKeyboardKeyPress = (event: TextInputKeyPressEvent) => {
-    if (event.nativeEvent.key === 'Backspace') {
-      tapKey('Backspace');
+    // Keep the box small, and make sure the marker is still there so
+    // the next Backspace can be noticed.
+    if (
+      text.length === 0 ||
+      text.length > MAX_BUFFER_LENGTH ||
+      text[0] !== MARKERS[markerIndexRef.current]
+    ) {
+      resetKeyboardBox();
+    } else {
+      lastKeyboardTextRef.current = text;
+      setKeyboardText(text);
     }
   };
 
@@ -731,8 +784,8 @@ function App() {
         <TextInput
           ref={keyboardInputRef}
           style={styles.hiddenInput}
+          value={keyboardText}
           onChangeText={onKeyboardText}
-          onKeyPress={onKeyboardKeyPress}
           onSubmitEditing={() => tapKey('Enter')}
           onBlur={() => setKeyboardOpen(false)}
           submitBehavior="submit"
