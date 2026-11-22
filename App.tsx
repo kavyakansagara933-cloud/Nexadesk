@@ -58,7 +58,7 @@ const SIGNALING_SERVER_URL = 'wss://macky-signaling-server.onrender.com';
 // Testing aid: true forces all traffic through the TURN relay.
 // Set true on BOTH the Host and Android Client only during testing.
 // Leave false for normal use.
-const FORCE_RELAY = true;
+const FORCE_RELAY = false;
 
 const RTC_CONFIG = {
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
