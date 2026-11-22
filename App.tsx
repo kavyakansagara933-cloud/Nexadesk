@@ -17,13 +17,13 @@
  *   - Tap with two fingers ... right click
  *   - Drag with two fingers .. scroll
  *
- * Flow (same as the browser test client):
+ * Flow:
  *   1. Join a room using the pairing code
  *   2. Receive the host's SDP offer
  *   3. Create and send an SDP answer
  *   4. Exchange ICE candidates
  *   5. Show the incoming screen stream
- *   6. Receive the "control" DataChannel (used for touch/keys in Stage 2)
+ *   6. Receive the "control" DataChannel
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -54,6 +54,11 @@ import {
 } from 'react-native-webrtc';
 
 const SIGNALING_SERVER_URL = 'wss://macky-signaling-server.onrender.com';
+
+// Testing aid: true forces all traffic through the TURN relay.
+// Set true on BOTH the Host and Android Client only during testing.
+// Leave false for normal use.
+const FORCE_RELAY = true;
 
 const RTC_CONFIG = {
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
@@ -167,6 +172,14 @@ function App() {
   // ICE candidates that arrive before the host's offer has been applied.
   const pendingCandidatesRef = useRef<any[]>([]);
   const remoteDescriptionSetRef = useRef(false);
+
+  // Servers used to find a path to the host. Replaced by the ICE list
+  // sent by the signaling server (which can include Metered TURN servers).
+  const iceServersRef = useRef<any[]>(RTC_CONFIG.iceServers);
+
+  // Do not process the Host's offer until the server has sent ICE settings.
+  const signalingJoinedRef = useRef(false);
+  const pendingOfferRef = useRef<any | null>(null);
 
   // Where the cursor is on the host, as fractions of its screen (0 to 1).
   const cursorRef = useRef({
@@ -407,6 +420,9 @@ function App() {
 
     pendingCandidatesRef.current = [];
     remoteDescriptionSetRef.current = false;
+    signalingJoinedRef.current = false;
+    pendingOfferRef.current = null;
+    iceServersRef.current = RTC_CONFIG.iceServers;
 
     setStream(null);
     setControlReady(false);
@@ -419,10 +435,30 @@ function App() {
   /* ---------------- WEBRTC ---------------- */
 
   const handleOffer = async (offer: any, socket: WebSocket) => {
-    const peer = new RTCPeerConnection(RTC_CONFIG);
+    const hasTurnServer = iceServersRef.current.some((server: any) => {
+      const urls = Array.isArray(server?.urls)
+        ? server.urls
+        : [server?.urls];
+
+      return urls.some(
+        (url: unknown) =>
+          typeof url === 'string' && /^turns?:/i.test(url),
+      );
+    });
+
+    if (FORCE_RELAY && !hasTurnServer) {
+      throw new Error(
+        'TURN-only mode is enabled, but no TURN server was received.',
+      );
+    }
+
+    const peer = new RTCPeerConnection({
+      iceServers: iceServersRef.current,
+      iceTransportPolicy: FORCE_RELAY ? 'relay' : 'all',
+    });
     peerRef.current = peer;
 
-    // The host creates the "control" DataChannel; we just receive it.
+    // The Host creates the control DataChannel; the Android Client receives it.
     peer.addEventListener('datachannel', (event: any) => {
       if (event.channel.label === 'control') {
         controlChannelRef.current = event.channel;
@@ -439,7 +475,7 @@ function App() {
       }
     });
 
-    // The host's screen arrives as a video track.
+    // Receive the Host's screen stream.
     peer.addEventListener('track', (event: any) => {
       if (event.streams && event.streams[0]) {
         setStream(event.streams[0]);
@@ -447,6 +483,7 @@ function App() {
       }
     });
 
+    // Send this client's ICE candidates through the signaling server.
     peer.addEventListener('icecandidate', (event: any) => {
       if (event.candidate && socket.readyState === WebSocket.OPEN) {
         socket.send(
@@ -472,7 +509,7 @@ function App() {
     await peer.setRemoteDescription(new RTCSessionDescription(offer));
     remoteDescriptionSetRef.current = true;
 
-    // Apply any ICE candidates that arrived early.
+    // Add ICE candidates that arrived before the offer was applied.
     for (const candidate of pendingCandidatesRef.current) {
       try {
         await peer.addIceCandidate(new RTCIceCandidate(candidate));
@@ -506,6 +543,12 @@ function App() {
       'Connecting to signaling server... (the first connection can take up to a minute)',
     );
 
+    signalingJoinedRef.current = false;
+    pendingOfferRef.current = null;
+    pendingCandidatesRef.current = [];
+    remoteDescriptionSetRef.current = false;
+    iceServersRef.current = RTC_CONFIG.iceServers;
+
     const socket = new WebSocket(SIGNALING_SERVER_URL);
     socketRef.current = socket;
 
@@ -519,7 +562,65 @@ function App() {
       console.log('[received]', msg.type);
 
       if (msg.type === 'joined') {
+        const receivedServers = Array.isArray(msg.iceServers)
+          ? msg.iceServers.filter((server: any) => {
+              const urls = Array.isArray(server?.urls)
+                ? server.urls
+                : [server?.urls];
+
+              return urls.some(
+                (url: unknown) =>
+                  typeof url === 'string' &&
+                  /^(stun|stuns|turn|turns):/i.test(url),
+              );
+            })
+          : [];
+
+        iceServersRef.current =
+          receivedServers.length > 0
+            ? receivedServers
+            : RTC_CONFIG.iceServers;
+
+        const hasTurnServer = iceServersRef.current.some((server: any) => {
+          const urls = Array.isArray(server?.urls)
+            ? server.urls
+            : [server?.urls];
+
+          return urls.some(
+            (url: unknown) =>
+              typeof url === 'string' && /^turns?:/i.test(url),
+          );
+        });
+
+        console.log(
+          hasTurnServer
+            ? 'TURN configuration received successfully.'
+            : 'No TURN server received. Using STUN fallback.',
+        );
+
+        if (FORCE_RELAY && !hasTurnServer) {
+          setStatus('TURN configuration unavailable. Cannot use relay-only mode.');
+          disconnect();
+          return;
+        }
+
+        signalingJoinedRef.current = true;
         setStatus("Joined. Waiting for host's offer...");
+
+        // Different WebSocket connections can deliver messages in a race.
+        // Process a stored offer now that this client's ICE settings are ready.
+        const pendingOffer = pendingOfferRef.current;
+        if (pendingOffer) {
+          pendingOfferRef.current = null;
+
+          try {
+            await handleOffer(pendingOffer, socket);
+          } catch (err) {
+            console.error('Failed to handle pending offer:', err);
+            setStatus('Could not set up the connection.');
+            disconnect();
+          }
+        }
       }
 
       if (msg.type === 'error') {
@@ -528,6 +629,14 @@ function App() {
       }
 
       if (msg.type === 'offer') {
+        // Wait for the joined message so the TURN configuration is ready.
+        if (!signalingJoinedRef.current) {
+          console.log('Offer received before ICE settings; waiting briefly.');
+          pendingOfferRef.current = msg.offer;
+          setStatus('Received offer. Preparing connection...');
+          return;
+        }
+
         setStatus('Offer received. Creating answer...');
 
         try {
@@ -780,7 +889,7 @@ function App() {
           </View>
         )}
 
-        {/* Hidden box that brings up the phone's keyboard. */}
+        {/* Hidden box that brings up the phone's on-screen keyboard. */}
         <TextInput
           ref={keyboardInputRef}
           style={styles.hiddenInput}
