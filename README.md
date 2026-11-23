@@ -1,120 +1,392 @@
 # NexaDesk
 
-**Control your Windows PC from your Android phone, from across the room or across the world.**
+**Control your Windows PC remotely from your Android phone.**
 
-NexaDesk is a remote desktop system I built from scratch: a Windows host app that streams your screen, an Android app that shows it and controls it by touch and keyboard, and a small signaling server that pairs the two. The screen video and the control commands travel directly between the devices over WebRTC.
+NexaDesk is a real-time remote desktop system built with Electron, React Native, Node.js and WebRTC. It allows users to view and control a Windows desktop from an Android device using touch gestures and keyboard input.
 
-<!-- Replace with your demo GIF or video link -->
-<!-- ![NexaDesk demo](docs/demo.gif) -->
+The project consists of a Windows Host application, an Android Client, a Browser Test Client and a WebSocket Signaling Server.
+
+The signaling server pairs devices and exchanges WebRTC connection information. Screen streaming and remote-control data use a WebRTC connection, either directly between devices or through a TURN relay when required.
+
+---
 
 ## Features
 
-- **Live screen streaming** from a Windows PC to a phone, over WebRTC
-- **Trackpad-style touch control**: drag to move, tap to click, double-tap, tap-and-drag, two-finger tap to right-click, two-finger drag to scroll
-- **Full keyboard from the phone**: type text, plus a key bar with Esc, Tab, arrows, Delete and sticky Ctrl / Alt / Shift for shortcuts such as Ctrl+C
-- **Pairing by a 6-character code**: no accounts, no port forwarding
-- **Resolution-independent input**: positions are sent as fractions of the screen, so the stream can be resized freely
-- **Low-latency tuning**: latest-wins command queue, frame-synced mouse events, capped bitrate for mobile Wi-Fi
+### Remote Desktop
+- Real-time Windows screen streaming.
+- WebRTC-based communication.
+- Automatic six-character pairing codes.
+- Cross-network connectivity using STUN and TURN.
+
+### Remote Control
+- Trackpad-style mouse movement.
+- Left click, double click and right click.
+- Drag and drop.
+- Two-finger scrolling.
+- Remote keyboard input.
+- Ctrl, Alt and Shift shortcuts.
+- Resolution-independent mouse coordinates.
+
+### Connectivity and Security
+- WebSocket-based signaling.
+- Dynamic ICE server configuration.
+- Metered TURN relay integration.
+- TURN credentials fetched by the signaling server.
+- Pairing-code expiration.
+- Failed-attempt rate limiting.
+- WebSocket heartbeat checks.
+- 64 KB signaling message limit.
+
+---
+
+## Repository Structure
+
+This repository uses a monorepo architecture to maintain all NexaDesk components in one place.
+
+```text
+Nexadesk/
+│
+├── apps/
+│   │
+│   ├── windows-host/
+│   │   ├── src/
+│   │   ├── package.json
+│   │   └── README.md
+│   │
+│   ├── android-client/
+│   │   ├── android/
+│   │   ├── ios/
+│   │   ├── App.tsx
+│   │   ├── package.json
+│   │   └── README.md
+│   │
+│   └── browser-test-client/
+│       ├── client.js
+│       ├── index.html
+│       └── README.md
+│
+├── services/
+│   │
+│   └── signaling-server/
+│       ├── server.js
+│       ├── package.json
+│       └── README.md
+│
+└── README.md
+```
+
+### Components
+
+| Component | Description | Technology |
+|---|---|---|
+| Windows Host | Captures and streams the Windows desktop | Electron, Node.js |
+| Android Client | Displays the screen and provides remote controls | React Native, TypeScript |
+| Browser Test Client | Tests WebRTC connections from a browser | HTML, JavaScript |
+| Signaling Server | Pairs devices and exchanges connection information | Node.js, WebSocket |
+
+---
 
 ## Architecture
 
 ```mermaid
-flowchart LR
-    subgraph PC["Windows PC"]
-        H["NexaDesk Host<br/>Electron + nut-js"]
-    end
-    subgraph Phone["Android phone"]
-        A["NexaDesk app<br/>React Native + react-native-webrtc"]
-    end
-    S["Signaling server<br/>Node.js + WebSocket"]
+flowchart TD
+    H["Windows Host<br/>Electron"]
+    A["Android Client<br/>React Native"]
+    B["Browser Test Client<br/>JavaScript"]
+    S["Signaling Server<br/>Node.js + WebSocket"]
+    I["STUN / TURN Services"]
+    
+    H <-->|"Pairing, SDP and ICE"| S
+    A <-->|"Pairing, SDP and ICE"| S
+    B <-->|"Pairing, SDP and ICE"| S
 
-    H <-->|"pairing, offer / answer, ICE"| S
-    A <-->|"pairing, offer / answer, ICE"| S
-    H ==>|"screen video (WebRTC)"| A
-    A ==>|"mouse + keyboard (DataChannel)"| H
+    H <-->|"WebRTC screen stream<br/>and control DataChannel"| A
+    H <-->|"WebRTC test connection"| B
+
+    H -.-> I
+    A -.-> I
+    B -.-> I
 ```
 
-The signaling server only introduces the two devices. Once they are connected, screen video and control commands flow directly between them.
+### Connection Flow
 
-### Connection flow
+1. Windows Host connects to the signaling server.
+2. The server generates a six-character pairing code.
+3. Android Client enters the pairing code.
+4. The signaling server pairs both devices.
+5. The server supplies the ICE server configuration.
+6. Host and Client exchange SDP offers, answers and ICE candidates.
+7. WebRTC establishes the connection using the available network path.
+8. Windows Host streams the desktop.
+9. Android Client sends mouse and keyboard commands through a WebRTC DataChannel.
 
-```mermaid
-sequenceDiagram
-    participant H as Host (PC)
-    participant S as Signaling server
-    participant A as Android app
-    H->>S: host-register
-    S-->>H: 6-character pairing code
-    A->>S: client-join (code)
-    S-->>H: peer-joined
-    H->>S: offer (SDP)
-    S-->>A: offer
-    A->>S: answer (SDP)
-    S-->>H: answer
-    H-->>A: ICE candidates (both directions)
-    Note over H,A: Direct WebRTC connection
-    H->>A: screen video
-    A->>H: mouse and keyboard over the "control" DataChannel
+The signaling server handles connection setup. It does not carry the desktop video stream itself.
+
+---
+
+## Technology Stack
+
+| Area | Technologies |
+|---|---|
+| Desktop application | Electron, Node.js |
+| Mobile application | React Native, TypeScript |
+| Screen capture | Electron desktop capture |
+| Remote input | @nut-tree-fork/nut-js |
+| Real-time communication | WebRTC |
+| Signaling | Node.js, WebSocket |
+| NAT traversal | STUN, TURN |
+| TURN provider | Metered |
+| Desktop packaging | electron-builder |
+| Android packaging | Gradle |
+| Backend deployment | Render |
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+- Windows 10 or Windows 11 for the Host.
+- Node.js 22.11 or newer for working across the project components.
+- npm.
+- Android Studio and Android SDK for Android development.
+- Git.
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/kavyakansagara933-cloud/Nexadesk.git
 ```
 
-## Tech stack
+```bash
+cd Nexadesk
+```
 
-| Part | Technology |
+### 2. Run Windows Host
+
+Open a terminal:
+
+```bash
+cd apps/windows-host
+```
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Start the Host:
+
+```bash
+npm start
+```
+
+Build the Windows installer:
+
+```bash
+npm run dist
+```
+
+The installer is generated inside:
+
+```text
+apps/windows-host/dist/
+```
+
+### 3. Run Android Client
+
+Open a terminal:
+
+```bash
+cd apps/android-client
+```
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Start Metro:
+
+```bash
+npm start
+```
+
+To run the Android application during development, use another terminal:
+
+```bash
+npm run android
+```
+
+To build the release APK:
+
+```powershell
+cd android
+.\gradlew.bat assembleRelease
+```
+
+The APK is generated at:
+
+```text
+apps/android-client/android/app/build/outputs/apk/release/app-release.apk
+```
+
+### 4. Run Signaling Server
+
+Open a terminal:
+
+```bash
+cd services/signaling-server
+```
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Start the server:
+
+```bash
+npm start
+```
+
+The server listens on the port provided by the `PORT` environment variable, or port 8080 by default.
+
+### 5. Run Browser Test Client
+
+Navigate to:
+
+```text
+apps/browser-test-client/
+```
+
+Open `index.html` in a modern web browser.
+
+The Browser Test Client does not require a build step or external npm dependencies.
+
+---
+
+## STUN and TURN Integration
+
+NexaDesk supports direct WebRTC connections and TURN-relayed connections.
+
+### STUN
+
+STUN helps WebRTC discover network addresses and establish direct connections where possible.
+
+### TURN
+
+TURN provides a relay path when a direct peer-to-peer connection cannot be established.
+
+NexaDesk uses Metered as its TURN service provider.
+
+### How TURN Configuration Works
+
+The signaling server fetches ICE server credentials from Metered and supplies the ICE configuration to the Host and Android Client when they pair.
+
+The Metered API key remains on the signaling server and must never be embedded in the desktop application, Android application or public source code.
+
+### Render Environment Variables
+
+Configure the following variables in the signaling server's Render environment:
+
+| Variable | Description |
 |---|---|
-| Host app | Electron, Node.js, `desktopCapturer`, `@nut-tree-fork/nut-js` |
-| Android app | React Native (TypeScript), `react-native-webrtc` |
-| Signaling | Node.js, `ws` (WebSocket), deployed on Render |
-| Transport | WebRTC: video track + ordered DataChannel, STUN |
-| Packaging | electron-builder (Windows installer), Gradle (APK) |
+| `METERED_APP_NAME` | Metered application name |
+| `METERED_API_KEY` | Credential-specific Metered API key |
+| `PORT` | Server listening port, supplied by Render |
 
-## Engineering notes
+Example:
 
-Problems I ran into while building this, and how I solved them:
+```text
+METERED_APP_NAME=nexadesk
+METERED_API_KEY=YOUR_PRIVATE_METERED_API_KEY
+```
 
-- **The cursor wandered instead of following the finger.** nut-js animates `mouse.move`, so many fast moves started overlapping animations. Switching to instant `setPosition` fixed it.
-- **Remote control lagged badly.** Several causes, fixed one by one: Chromium throttled the host window when other apps covered it (disabled background throttling); every move was sent individually (now one per animation frame); a backlog of old moves delayed new ones (a command queue that keeps only the latest move).
-- **The phone's picture fell behind over time.** The encoder kept raising its bitrate until the Wi-Fi link was full. Capping bitrate, frame rate and size keeps the stream real-time.
-- **Mouse accuracy depended on resolution.** Positions are now sent as 0 to 1 fractions and converted on the host, so resizing the video or Windows display scaling can't break pointing.
-- **Typing was slow and lossy.** The input library paused 300 ms after every key, and clearing the phone's text box after each key could drop fast keystrokes. The pause was shortened, and the phone now sends exact text differences.
+**Never commit your actual Metered API key to GitHub.**
 
-## Getting started
+### Deploying the Server from This Monorepo
 
-### Try it (no setup)
+When configuring Render to deploy directly from this repository:
 
-Download from the [Releases](../../releases) page:
+- Repository: `Nexadesk`
+- Root Directory: `services/signaling-server`
+- Build Command: `npm install`
+- Start Command: `npm start`
 
-1. Install **NexaDesk Host** on your Windows PC and open it. It shows a pairing code.
-2. Install the **NexaDesk APK** on your Android phone and enter the code.
+Add the required environment variables in Render.
 
-Windows may show a "protected your PC" warning because the installer is not code-signed. Choose "More info", then "Run anyway".
+---
 
-### Run from source
+## TURN Relay Testing
 
-| Component | Repository |
-|---|---|
-| Host app | [NexaDesk-host](https://github.com/kavyakansagara933-cloud/NexaDesk-host) |
-| Android app | [NexaDesk-android](https://github.com/kavyakansagara933-cloud/NexaDesk-android) |
-| Signaling server | [NexaDesk-signaling-server](https://github.com/kavyakansagara933-cloud/NexaDesk-signaling-server) |
-| Browser test client | [NexaDesk-test-client](https://github.com/kavyakansagara933-cloud/NexaDesk-test-client) |
+Both the Windows Host and Android Client contain a testing option:
 
-Each repository has its own README with setup steps.
+```javascript
+const FORCE_RELAY = false;
+```
 
-## Current limitations
+For normal operation, keep this setting `false`.
 
-- The host runs on **Windows** only, and streams the primary screen.
-- Connections use STUN only. Two devices on the same Wi-Fi connect reliably; some mobile networks may need a TURN relay (planned).
-- The pairing code is the only access control (planned: short expiry and attempt limits). Use it on networks you trust.
-- No audio, clipboard sync or file transfer yet.
+For a forced TURN test:
 
-## Roadmap
+1. Set `FORCE_RELAY = true` in both applications.
+2. Rebuild and run both applications.
+3. Connect the Android device to the Windows Host.
+4. Verify that streaming and remote controls work.
+5. Restore `FORCE_RELAY = false` after testing.
 
-- TURN relay for connections across restrictive networks
-- Pairing-code expiry and rate limiting
-- Clipboard sync and audio
-- Multi-monitor selection
-- Polished UI for the host and Android apps
+A successful forced-relay connection verifies that the TURN relay path is usable.
+
+---
+
+## Current Limitations
+
+- Windows Host currently supports Windows desktops.
+- Screen capture currently targets the primary display.
+- Audio streaming is not implemented.
+- Clipboard synchronization is not implemented.
+- File transfer is not implemented.
+- The Browser Test Client is intended for connection testing rather than replacing the Android application.
+
+---
+
+## Releases and Downloads
+
+Download the published applications from the GitHub Releases page:
+
+**[NexaDesk Releases](https://github.com/kavyakansagara933-cloud/Nexadesk/releases)**
+
+Current published release: **v1.0.0**
+
+Available downloads:
+- Windows Host installer (`.exe`)
+- Android application (`.apk`)
+
+---
+
+## Development and Git History
+
+NexaDesk originally maintained its components in separate repositories.
+
+The project was consolidated into a monorepo using Git subtree imports without squashing, preserving the original component commit histories.
+
+The original standalone repositories have been retained.
+
+---
 
 ## Author
 
-**Kavya Kansagara**, Computer Science Engineering student.
-[LinkedIn](https://www.linkedin.com/in/kavya-kansagara-32a624335/) · [GitHub](https://github.com/kavyakansagara933-cloud)
+**Kavya Kansagara**
+
+Computer Science and Engineering
+
+- GitHub: [@kavyakansagara933-cloud](https://github.com/kavyakansagara933-cloud)
+- LinkedIn: [Kavya Kansagara](https://www.linkedin.com/in/kavya-kansagara-32a624335/)
+
+---
+
+**NexaDesk — Remote desktop connectivity across networks.**
