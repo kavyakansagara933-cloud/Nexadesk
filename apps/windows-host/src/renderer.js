@@ -58,7 +58,7 @@ let iceServers = RTC_CONFIG.iceServers;
 
 // Testing aid: set true on BOTH Host and Android to prove TURN works.
 // Leave false for normal use.
-const FORCE_RELAY = true;
+const FORCE_RELAY = false;
 
 // ICE candidates from Android can arrive before its SDP answer is applied.
 const pendingRemoteCandidates = [];
